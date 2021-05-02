@@ -148,13 +148,13 @@ func main() {
 	//fmt.Println(arrs)
 
 	selfbtree.BtreeHello()
-	selfBtree, err := selfbtree.NewBtree("", 128)
-	var testNum = 5000000
+	selfBtree, err := selfbtree.NewBtree("/Users/zhaoxugang/go/src/golang-helloworld/zdb.idx", 128)
+	var testNum = 50000
 	randomKeys := make([]int, 0)
 	for i := 0; i < testNum; i++ {
 		//n := rand.Int() & 0xffffffff
 		n := i
-		if i%50000 == 0 {
+		if i%500 == 0 {
 			fmt.Printf("insert into btree %d, key=%d\n", i, n)
 		}
 		key := selfbtree.Encode(n)
@@ -169,7 +169,7 @@ func main() {
 		fmt.Println(err)
 	}
 	for i := 0; i < testNum; i++ {
-		if i%50000 == 0 {
+		if i%500 == 0 {
 			fmt.Printf("select from btree %d\n", i)
 		}
 		//n := randomKeys[i] & 0xffffffff
@@ -183,14 +183,14 @@ func main() {
 	}
 	fmt.Println(selfBtree)
 	//fmt.Println("===============别人的BTree====================")
-	bt := btree.New(90)
-	v := btree.Int(2)
-	bt.ReplaceOrInsert(v)
-	fmt.Println(bt.Get(v))
-	var wg *sync.WaitGroup = &sync.WaitGroup{}
-	wg.Add(1)
-
-	go insertIntoBtree(0, 1000, bt, wg)
+	//bt := btree.New(90)
+	//v := btree.Int(2)
+	//bt.ReplaceOrInsert(v)
+	//fmt.Println(bt.Get(v))
+	//var wg *sync.WaitGroup = &sync.WaitGroup{}
+	//wg.Add(1)
+	//
+	//go insertIntoBtree(0, 1000, bt, wg)
 	////go insertIntoBtree(1000,2000, bt, wg)
 	////go insertIntoBtree(2000,3000, bt, wg)
 	////go insertIntoBtree(3000,4000, bt, wg)

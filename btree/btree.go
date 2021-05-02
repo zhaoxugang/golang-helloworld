@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-const NODE_HEAD = 0xE4E5 //节点序列化头
+const NODE_HEAD uint16 = 0xE4E5 //节点序列化头
 
 type Btree interface {
 	Insert(key, value Item) bool
@@ -73,12 +73,22 @@ func Encode(v interface{}) Item {
 }
 
 func (b *btree) Insert(key, value Item) bool {
+	// 先看root要不要分裂
+	if b.root.size == b.maxDegree {
+		left, middle, right := b.split(b.root)
+		b.root = &btreeNode{}
+		b.root.kv = append(b.root.kv, middle)
+		b.root.child = append(b.root.child, left, right)
+		b.root.size = 1
+		left.parent = b.root
+		right.parent = b.root
+	}
 	return b.insertIntoNode(b.root, key, value)
 }
 
 func (b *btree) encodeNodeToBytes(node *btreeNode) {
 	bs := make([]byte, 0)
-	bs = append(bs, NODE_HEAD)
+	binary.BigEndian.PutUint16(bs, NODE_HEAD)
 	ub := make([]byte, 8)
 	binary.LittleEndian.PutUint64(ub, node.offset)
 	bs = append(bs, ub...)
@@ -104,7 +114,7 @@ func (b *btree) insertIntoNode(node *btreeNode, key Item, value Item) bool {
 				return false
 			}
 		}
-		if len(node.child) <= 0 {
+		if len(node.child) == 0 {
 			if idx >= 0 {
 				node.kv = append(append(append([][]Item{{}}[0:0], node.kv[0:idx]...), []Item{key, value}),
 					node.kv[idx:node.size]...)
@@ -113,26 +123,30 @@ func (b *btree) insertIntoNode(node *btreeNode, key Item, value Item) bool {
 				node.kv = append(node.kv, []Item{key, value})
 				node.size++
 			}
-			if node.size > b.capacity {
-				//分裂
-				middle := node.size / 2
-				newNode := &btreeNode{
-					kv:     append([][]Item{{}}[0:0], node.kv[middle+1:node.size]...),
-					size:   node.size - middle - 1,
-					parent: node.parent,
-				}
-				b.insertNode(newNode.parent, node, newNode, node.kv[middle])
-				node.kv = node.kv[0:middle]
-				node.size = middle
-			}
 			return true
 		} else {
 			// 插入子节点
-			if idx >= 0 {
-				return b.insertIntoNode(node.child[idx], key, value)
-			} else {
-				return b.insertIntoNode(node.child[node.size], key, value)
+			if idx < 0 {
+				idx = int(node.size)
 			}
+
+			//校验要插入的子节点是否需要分裂
+			targetNode := node.child[idx]
+			if targetNode.size == b.maxDegree {
+				left, middle, right := b.split(targetNode)
+				targetNode = &btreeNode{
+					size:   1,
+					parent: node,
+				}
+				targetNode.kv = append(targetNode.kv, middle)
+				targetNode.child = append(targetNode.child, left, right)
+
+				node.child[idx] = targetNode
+				left.parent = targetNode
+				right.parent = targetNode
+			}
+
+			return b.insertIntoNode(targetNode, key, value)
 		}
 	}
 }
@@ -164,61 +178,23 @@ func (b *btree) findValueByKey(node *btreeNode, key Item) Item {
 	}
 }
 
-func (b *btree) insertNode(parent *btreeNode, left, right *btreeNode, items []Item) {
-	key := items[0]
-	value := items[1]
-	if parent == nil {
-		parent = &btreeNode{
-			kv:    make([][]Item, 0),
-			size:  0,
-			child: make([]*btreeNode, 0),
-		}
-		parent.child = append(parent.child, left, right)
-		parent.kv = append(parent.kv, items)
-		b.root = parent
-		left.parent = parent
-		right.parent = parent
-		parent.size++
-	} else {
-		// 先插入
-		idx := -1
-		for i, kv := range parent.kv {
-			if key.Less(kv[0]) {
-				idx = i
-				break
-			}
-		}
-		if idx >= 0 {
-			parent.kv = append(append(append([][]Item{{}}[0:0], parent.kv[0:idx]...), []Item{key, value}),
-				parent.kv[idx:parent.size]...)
-			parent.child = append(append(append([]*btreeNode{}[0:0], parent.child[0:idx+1]...), right),
-				parent.child[idx+1:parent.size+1]...)
-			right.parent = parent
-			parent.size++
-		} else {
-			parent.kv = append(parent.kv, []Item{key, value})
-			parent.child = append(parent.child, right)
-			right.parent = parent
-			parent.size++
-		}
-		//分裂
-		if parent.size > b.capacity {
-			middle := parent.size / 2
-			newNode := &btreeNode{
-				kv:     append([][]Item{{}}[0:0], parent.kv[middle+1:parent.size]...),
-				size:   parent.size - middle - 1,
-				parent: parent.parent,
-				child:  append([]*btreeNode{}[0:0], parent.child[middle+1:parent.size+1]...),
-			}
-			for _, bnode := range newNode.child {
-				bnode.parent = newNode
-			}
-			b.insertNode(parent.parent, parent, newNode, parent.kv[middle])
-			parent.kv = parent.kv[0:middle]
-			parent.child = parent.child[0 : middle+1]
-			parent.size = middle
-		}
+func (b *btree) split(parent *btreeNode) (*btreeNode, []Item, *btreeNode) {
+	mid := parent.size / 2
+	midItem := parent.kv[mid]
+	left := &btreeNode{
+		kv:   parent.kv[0:mid],
+		size: mid,
 	}
+	right := &btreeNode{
+		kv:   parent.kv[mid+1:],
+		size: mid - 1,
+	}
+
+	if len(parent.child) > 0 {
+		left.child = parent.child[0 : mid+1]
+		right.child = parent.child[0 : mid+1]
+	}
+	return left, midItem, right
 }
 
 func NewBtree(path string, degree int16) (Btree, error) {
