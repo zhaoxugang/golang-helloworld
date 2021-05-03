@@ -1,6 +1,7 @@
 package selfbtree
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"os"
@@ -109,10 +110,10 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 			persistencer: p,
 		}
 		bn.child = append(bn.child, cbn)
-		cbn.parent = bn
 	}
 	cur += 128 * 8
 
+	kvDataOffsetStart := uint32(len(buf))
 	// kv存储直接放在buf中
 	for i := 0; i < int(size); i++ {
 		offset := binary.BigEndian.Uint32(buf[cur+i*4 : cur+(i+1)*4])
@@ -122,12 +123,22 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 		key := &btreeItem{key: kvbuf[4 : 4+keyLen]}
 		value := &btreeItem{key: kvbuf[4+keyLen:]}
 		bn.keyOffsetMap[i] = offset
+		if offset < kvDataOffsetStart {
+			kvDataOffsetStart = offset
+		}
 		bn.kv = append(bn.kv, []Item{key, value})
 	}
+	bn.kvDataOffsetStart = kvDataOffsetStart
 
 	return nil
 }
 
-func (p *SoltPersistencer) Init() {
-	writeFile(p.idxFile, 0, p.magic) //写入magic
+func (p *SoltPersistencer) Init() bool {
+	buf := make([]byte, 2)
+	readFile(p.idxFile, 0, buf)
+	if bytes.Compare(buf, p.magic) != 0 {
+		writeFile(p.idxFile, 0, p.magic) //写入magic
+		return true
+	}
+	return false
 }

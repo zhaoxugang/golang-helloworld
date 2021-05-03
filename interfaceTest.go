@@ -155,26 +155,26 @@ func main() {
 		fmt.Println(err)
 		return
 	}
-	var testNum = 200000
-	//for i := 0; i < testNum; i++ {
-	//	//n := rand.Int() & 0xffffffff
-	//	n := i
-	//	if i%500 == 0 {
-	//		fmt.Printf("insert into btree %d, key=%d\n", i, n)
-	//	}
-	//	//if i == 193 {
-	//		//fmt.Println("===")
-	//	//}
-	//	key := selfbtree.Encode(n)
-	//	value := selfbtree.Encode(n)
-	//	ok := selfBtree.Insert(key, value)
-	//	if !ok {
-	//		fmt.Println("插入失败，key已存在")
-	//	}
-	//}
-	//if err != nil {
-	//	fmt.Println(err)
-	//}
+	var testNum = 1000
+	for i := 0; i < testNum; i++ {
+		//n := rand.Int() & 0xffffffff
+		n := i
+		//if i%500 == 0 {
+		fmt.Printf("insert into btree %d, key=%d\n", i, n)
+		//}
+		//if i == 193 {
+		//fmt.Println("===")
+		//}
+		key := selfbtree.Encode(n)
+		value := selfbtree.Encode(n)
+		ok := selfBtree.Insert(key, value)
+		if !ok {
+			fmt.Println("插入失败，key已存在")
+		}
+	}
+	if err != nil {
+		fmt.Println(err)
+	}
 	for i := 0; i < testNum; i++ {
 		if i%500 == 0 {
 			fmt.Printf("select from btree %d\n", i)
