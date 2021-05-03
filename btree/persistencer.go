@@ -14,6 +14,7 @@ type Persistencer interface {
 	LoadNode(bn *btreeNode, offset uint64, size uint32) (*btreeNode, error)
 	SerializeNode(node *btreeNode) (uint64, error)
 	Flush() error
+	UpdateRoot(bn *btreeNode) bool
 }
 
 //分槽页
@@ -54,14 +55,14 @@ func (p *SoltPersistencer) LoadNode(bn *btreeNode, offset uint64, size uint32) (
 			holdOnMem:    true,
 			child:        make([]*btreeNode, 0),
 			bufPage:      buf,
-			keyOffsetMap: make([]uint32, 128),
+			keyOffsetMap: make([]uint32, 2048),
 			persistencer: p,
 		}
 	} else {
 		bn.holdOnMem = true
 		bn.child = make([]*btreeNode, 0)
 		bn.bufPage = buf
-		bn.keyOffsetMap = make([]uint32, 128)
+		bn.keyOffsetMap = make([]uint32, 2048)
 		bn.persistencer = p
 	}
 	err = p.decoder(bn, buf)
@@ -98,7 +99,7 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 	cur += 2
 
 	// 节点子节点引用
-	childOffets := buf[cur : cur+128*8] // 128个子节点
+	childOffets := buf[cur : cur+2048*8] // 2048个子节点
 	for i := 0; i < len(childOffets); i += 1 {
 		coff := binary.BigEndian.Uint64(childOffets[i*8 : (i+1)*8])
 		if coff == 0 {
@@ -111,7 +112,7 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 		}
 		bn.child = append(bn.child, cbn)
 	}
-	cur += 128 * 8
+	cur += 2048 * 8
 
 	kvDataOffsetStart := uint32(len(buf))
 	// kv存储直接放在buf中
@@ -133,12 +134,26 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 	return nil
 }
 
-func (p *SoltPersistencer) Init() bool {
-	buf := make([]byte, 2)
-	readFile(p.idxFile, 0, buf)
-	if bytes.Compare(buf, p.magic) != 0 {
-		writeFile(p.idxFile, 0, p.magic) //写入magic
-		return true
+func (p *SoltPersistencer) UpdateRoot(bn *btreeNode) bool {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, bn.offset)
+	err := writeFile(p.idxFile, 2, buf)
+	if err != nil {
+		return false
 	}
-	return false
+	return true
+}
+
+func (p *SoltPersistencer) Init() (uint64, bool) {
+	buf := make([]byte, 8)
+	readFile(p.idxFile, 0, buf[0:2])
+
+	if bytes.Compare(buf[0:2], p.magic) != 0 {
+		writeFile(p.idxFile, 0, p.magic) //写入magic
+		binary.BigEndian.PutUint64(buf, 10)
+		writeFile(p.idxFile, 2, buf)
+		return 10, true
+	}
+	readFile(p.idxFile, 2, buf)
+	return binary.BigEndian.Uint64(buf), false
 }

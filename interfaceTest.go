@@ -150,12 +150,12 @@ func main() {
 	selfbtree.BtreeHello()
 	selfBtree, err := selfbtree.NewBtree("/Users/zhaoxugang/go/src/golang-helloworld/zdb.idx",
 		//128, false)
-		128, true)
+		2048, true)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	var testNum = 1000
+	var testNum = 222222
 	for i := 0; i < testNum; i++ {
 		//n := rand.Int() & 0xffffffff
 		n := i
