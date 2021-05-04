@@ -102,7 +102,7 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 	childOffets := buf[cur : cur+2048*8] // 2048个子节点
 	for i := 0; i < len(childOffets); i += 1 {
 		coff := binary.BigEndian.Uint64(childOffets[i*8 : (i+1)*8])
-		if coff == 0 {
+		if i > int(size) {
 			break
 		}
 		cbn := &btreeNode{

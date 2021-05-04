@@ -14,7 +14,7 @@ const (
 )
 
 type Btree interface {
-	Insert(key, value Item) bool
+	Insert(key, value Item) (bool, error)
 	GET(key Item) (Item, bool, error)
 	Flush() error
 }
@@ -36,6 +36,7 @@ type btreeNode struct {
 	keyOffsetMap      []uint32 `记录key的偏移量`
 	kvDataOffsetStart uint32   `kv数据存储开始偏移`
 	persistencer      Persistencer
+	isLeaf            bool
 
 	kv    [][]Item
 	size  uint16
@@ -85,10 +86,8 @@ func (n *btreeNode) getChild(idx int) (*btreeNode, error) {
 }
 
 //插入替换
+//插入替换
 func (n *btreeNode) istAndRepChilds(idx int16, left *btreeNode, right *btreeNode) {
-	if len(n.child) == 192 {
-		fmt.Printf("idx:=%d,len(n.child)=%d", idx, len(n.child))
-	}
 	var child []*btreeNode
 	n.child[idx] = left
 	if idx == int16(n.size) {
@@ -205,30 +204,20 @@ func (b *btree) Flush() error {
 	return b.persistencer.Flush()
 }
 
-func (b *btree) Insert(key, value Item) bool {
-	state, err := b.insertIntoNode(b.root, key, value)
-	if err != nil {
-		fmt.Println(err)
-		return false
-	}
-	if state == 1 {
-		return true
-	} else if state == 3 { //空间不足
-		right, err := b.NewBtreeNode(nil, make([][]Item, 0), 0, make([]*btreeNode, 0))
+func (b *btree) Insert(key, value Item) (bool, error) {
+	// 先看root要不要分裂
+	if b.root.size == b.capacity {
+		left, middle, right, err := b.split(2, b.root)
 		if err != nil {
-			return false
+			return false, err
 		}
-		root, err := b.NewBtreeNode(nil, append([][]Item{}, []Item{key, value}),
-			1, []*btreeNode{b.root, right})
+		node, err := b.NewBtreeNode(b.root, [][]Item{middle}, 1, []*btreeNode{left, right})
 		if err != nil {
-			return false
+			return false, err
 		}
-		b.root = root
-		b.persistencer.UpdateRoot(b.root)
-		return true
-	} else {
-		return false
+		b.root = node
 	}
+	return b.insertIntoNode(b.root, key, value), nil
 }
 
 func (b *btree) encodeNodeToBytes(node *btreeNode) {
@@ -243,28 +232,21 @@ func (b *btree) encodeNodeToBytes(node *btreeNode) {
 func (b *btree) loadNodeFromDisk() {
 }
 
-// 1:插入成功，2:键重复，3:空间不足，4：其他
-func (b *btree) insertIntoNode(node *btreeNode, key Item, value Item) (uint8, error) {
+func (b *btree) insertIntoNode(node *btreeNode, key Item, value Item) bool {
 	if node.size == 0 { //空树
 		node.insertKv(-1, key, value)
-		return 1, nil
+		return true
 	} else { //没有子树时
 		//然后插入
 		var idx int16 = -1
-		for i, kv := range node.kv {
-			if key.Less(kv[0]) {
-				idx = int16(i)
-				break
-			} else if key.Equal(kv[0]) {
-				return 2, nil
-			}
+		idx = int16(node.BinarySearchLE(key))
+		if idx >= 0 && key.Equal(node.kv[idx][0]) {
+			return false
 		}
+
 		if len(node.child) == 0 {
-			if node.size == b.capacity {
-				return 3, nil
-			}
 			node.insertKv(idx, key, value)
-			return 1, nil
+			return true
 		} else {
 			// 插入子节点
 			childInsertIdx := idx
@@ -277,27 +259,56 @@ func (b *btree) insertIntoNode(node *btreeNode, key Item, value Item) (uint8, er
 			targetNode, err := node.getChild(int(childInsertIdx))
 			if err != nil {
 				fmt.Println(err)
-				return 4, err
+				return false
+			}
+			if targetNode.size == b.capacity {
+				left, middle, right, err := b.split(1, targetNode)
+				if err != nil {
+					return false
+				}
+				node.istAndRepChilds(childInsertIdx, left, right)
+				node.insertKv(idx, middle[0], middle[1])
+				if key.Less(middle[0]) {
+					return b.insertIntoNode(left, key, value)
+				} else if key.Equal(middle[0]) {
+					return false
+				} else {
+					return b.insertIntoNode(right, key, value)
+				}
 			}
 
-			state, err := b.insertIntoNode(targetNode, key, value)
-			if state == 3 {
-				if node.size == b.capacity {
-					return 3, nil
-				}
-				fmt.Println("split...")
-				right, err := b.NewBtreeNode(nil, make([][]Item, 0), 0, make([]*btreeNode, 0))
-				if err != nil {
-					return 4, err
-				}
-				node.istAndRepChilds(childInsertIdx, targetNode, right)
-				node.insertKv(idx, key, value)
-				return 1, nil
-			} else {
-				return state, err
-			}
+			return b.insertIntoNode(targetNode, key, value)
 		}
 	}
+}
+
+func (bn *btreeNode) BinarySearchLE(key Item) int {
+	start := 0
+	end := int(bn.size)
+	mid := int(bn.size / 2)
+	kvs := bn.kv
+	if key.Less(kvs[0][0]) {
+		return 0
+	}
+	if kvs[end-1][0].Less(key) {
+		return -1
+	}
+
+	for end >= start {
+		if kvs[mid][0].Equal(key) {
+			return mid
+		} else if key.Less(kvs[mid][0]) {
+			if kvs[mid-1][0].Less(key) {
+				return mid
+			} else {
+				end = mid - 1
+			}
+		} else {
+			start = mid + 1
+		}
+		mid = (start + end) / 2
+	}
+	return -1
 }
 
 func (b *btree) GET(key Item) (Item, bool, error) {
@@ -312,12 +323,29 @@ func (b *btree) GET(key Item) (Item, bool, error) {
 }
 
 func (b *btree) findValueByKey(node *btreeNode, key Item) (Item, error) {
-	for i, kv := range node.kv {
-		if kv[0].Equal(key) {
-			return kv[1], nil
-		} else if key.Less(kv[0]) {
+	//for i, kv := range node.kv {
+	//	if kv[0].Equal(key) {
+	//		return kv[1], nil
+	//	} else if key.Less(kv[0]) {
+	//		if len(node.child) > 0 {
+	//			cbn, err := node.getChild(i)
+	//			if err != nil {
+	//				return nil, err
+	//			}
+	//			return b.findValueByKey(cbn, key)
+	//		} else {
+	//			return nil, nil
+	//		}
+	//	}
+	//}
+	idx := node.BinarySearchLE(key)
+	if idx >= 0 {
+		tkv := node.kv[idx]
+		if tkv[0].Equal(key) {
+			return tkv[1], nil
+		} else {
 			if len(node.child) > 0 {
-				cbn, err := node.getChild(i)
+				cbn, err := node.getChild(idx)
 				if err != nil {
 					return nil, err
 				}
@@ -327,6 +355,7 @@ func (b *btree) findValueByKey(node *btreeNode, key Item) (Item, error) {
 			}
 		}
 	}
+
 	if len(node.child) > 0 {
 		cbn, err := node.getChild(int(node.size))
 		if err != nil {
@@ -340,24 +369,32 @@ func (b *btree) findValueByKey(node *btreeNode, key Item) (Item, error) {
 
 // mode：分裂模式, 1:只分裂出一个节点，2：分裂出两个全新的节点
 func (b *btree) split(mode int, parent *btreeNode) (*btreeNode, []Item, *btreeNode, error) {
-	mid := parent.size / 2
+	mid := parent.size - 2
 	midItem := parent.kv[mid]
 
 	var lchild, rchild []*btreeNode
 	if len(parent.child) > 0 {
-		lchild = parent.child[0 : mid+1]
-		rchild = parent.child[0 : mid+1]
+		if mode == 1 {
+			lchild = parent.child[0 : mid+1]
+		} else {
+			lchild = append([]*btreeNode{}, parent.child[0:mid+1]...)
+		}
+		rchild = append([]*btreeNode{}, parent.child[mid+1:parent.size+1]...)
 	}
 
 	var orgNode *btreeNode = nil
+	var ckv [][]Item = nil
 	if mode == 1 {
 		orgNode = parent
+		ckv = parent.kv[0:mid]
+	} else {
+		ckv = append([][]Item{}, parent.kv[0:mid]...)
 	}
-	left, err := b.NewBtreeNode(orgNode, parent.kv[0:mid], mid, lchild)
+	left, err := b.NewBtreeNode(orgNode, ckv, mid, lchild)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	right, err := b.NewBtreeNode(nil, parent.kv[mid+1:], mid-1, rchild)
+	right, err := b.NewBtreeNode(nil, append([][]Item{}, parent.kv[mid+1:]...), 1, rchild)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -366,7 +403,7 @@ func (b *btree) split(mode int, parent *btreeNode) (*btreeNode, []Item, *btreeNo
 }
 
 func NewBtree(path string, degree uint16, reloadFromDick bool) (Btree, error) {
-	if degree < 2 {
+	if degree < 10 {
 		return nil, errors.New("degree is small than 2")
 	}
 	persistencer, err := NewSoltPersistencer(path)
