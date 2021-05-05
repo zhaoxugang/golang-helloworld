@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 )
 
@@ -55,14 +56,14 @@ func (p *SoltPersistencer) LoadNode(bn *btreeNode, offset uint64, size uint32) (
 			holdOnMem:    true,
 			child:        make([]*btreeNode, 0),
 			bufPage:      buf,
-			keyOffsetMap: make([]uint32, 2048),
+			keyOffsetMap: make([]uint32, 4096),
 			persistencer: p,
 		}
 	} else {
 		bn.holdOnMem = true
 		bn.child = make([]*btreeNode, 0)
 		bn.bufPage = buf
-		bn.keyOffsetMap = make([]uint32, 2048)
+		bn.keyOffsetMap = make([]uint32, 4096)
 		bn.persistencer = p
 	}
 	err = p.decoder(bn, buf)
@@ -92,42 +93,64 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 		return errors.New("magic异常")
 	}
 	cur += 2
-
+	nodeMata := buf[cur]
+	if nodeMata&0x01 > 0 {
+		bn.isLeaf = true
+	}
+	cur += 1
 	//节点元素数
 	size := binary.BigEndian.Uint16(buf[cur:]) //unint16类型
 	bn.size = size
 	cur += 2
-
-	// 节点子节点引用
-	childOffets := buf[cur : cur+2048*8] // 2048个子节点
-	for i := 0; i < len(childOffets); i += 1 {
-		coff := binary.BigEndian.Uint64(childOffets[i*8 : (i+1)*8])
-		if i > int(size) {
-			break
+	if !bn.isLeaf {
+		// 节点子节点引用
+		childOffets := buf[cur : cur+4096*8] // 4096个子节点
+		for i := 0; i <= int(size); i += 1 {
+			if (i+1)*8 == 65536 {
+				fmt.Println("ads")
+			}
+			coff := binary.BigEndian.Uint64(childOffets[i*8 : (i+1)*8])
+			cbn := &btreeNode{
+				holdOnMem:    false,
+				offset:       coff,
+				persistencer: p,
+			}
+			bn.child = append(bn.child, cbn)
 		}
-		cbn := &btreeNode{
-			holdOnMem:    false,
-			offset:       coff,
-			persistencer: p,
-		}
-		bn.child = append(bn.child, cbn)
+		cur += 4096 * 8
 	}
-	cur += 2048 * 8
 
 	kvDataOffsetStart := uint32(len(buf))
 	// kv存储直接放在buf中
-	for i := 0; i < int(size); i++ {
-		offset := binary.BigEndian.Uint32(buf[cur+i*4 : cur+(i+1)*4])
-		len := binary.BigEndian.Uint32(buf[offset : offset+4])
-		kvbuf := buf[offset+4 : offset+len]
-		keyLen := binary.BigEndian.Uint32(kvbuf[0:4])
-		key := &btreeItem{key: kvbuf[4 : 4+keyLen]}
-		value := &btreeItem{key: kvbuf[4+keyLen:]}
-		bn.keyOffsetMap[i] = offset
-		if offset < kvDataOffsetStart {
-			kvDataOffsetStart = offset
+	if bn.isLeaf {
+		for i := 0; i < int(size); i++ {
+			offset := binary.BigEndian.Uint32(buf[cur+i*4 : cur+(i+1)*4])
+			len := binary.BigEndian.Uint32(buf[offset : offset+4])
+			kvbuf := buf[offset+4 : offset+len]
+			keyLen := binary.BigEndian.Uint32(kvbuf[0:4])
+			key := &btreeItem{key: kvbuf[4 : 4+keyLen]}
+			value := &btreeItem{key: kvbuf[4+keyLen:]}
+			bn.keyOffsetMap[i] = offset
+			if offset < kvDataOffsetStart {
+				kvDataOffsetStart = offset
+			}
+			bn.kv = append(bn.kv, []Item{key, value})
 		}
-		bn.kv = append(bn.kv, []Item{key, value})
+	} else {
+		for i := 0; i < int(size); i++ {
+			offset := binary.BigEndian.Uint32(buf[cur+i*4 : cur+(i+1)*4])
+			len := binary.BigEndian.Uint32(buf[offset : offset+4])
+			if 3840212993 == offset+len {
+				fmt.Println("121")
+			}
+			kvbuf := buf[offset+4 : offset+len]
+			key := &btreeItem{key: kvbuf}
+			bn.keyOffsetMap[i] = offset
+			if offset < kvDataOffsetStart {
+				kvDataOffsetStart = offset
+			}
+			bn.kv = append(bn.kv, []Item{key, nil})
+		}
 	}
 	bn.kvDataOffsetStart = kvDataOffsetStart
 

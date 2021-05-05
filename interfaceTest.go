@@ -149,48 +149,48 @@ func main() {
 
 	selfbtree.BtreeHello()
 	selfBtree, err := selfbtree.NewBtree("/Users/zhaoxugang/go/src/golang-helloworld/zdb.idx",
-		//2048, false)
-		2048, true)
+		//4096, false)
+		4096, true)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	var start = 0
 	var testNum = 5000000
-	//for i := start; i < testNum; i++ {
-	//	//n := rand.Int() & 0xffffffff
-	//	n := i
-	//	if i%50000 == 0 {
-	//		fmt.Printf("insert into btree %d, key=%d\n", i, n)
-	//	}
-	//	//if i == 193 {
-	//	//fmt.Println("===")
-	//	//}
-	//	if i == 16131{
-	//		fmt.Println("ad")
-	//	}
-	//	key := selfbtree.Encode(n)
-	//	value := selfbtree.Encode(n)
-	//	ok, _ := selfBtree.Insert(key, value)
-	//	if !ok {
-	//		fmt.Println("插入失败，key已存在")
-	//	}
-	//	//if ok {
-	//	//	fmt.Println("马蛋！！怎么插入成功了？！")
-	//	//}
-	//}
-	//if err != nil {
-	//	fmt.Println(err)
-	//}
+	for i := start; i < testNum; i++ {
+		//n := rand.Int() & 0xffffffff
+		n := i
+		if i%50000 == 0 {
+			fmt.Printf("insert into btree %d, key=%d\n", i, n)
+		}
+		//if i == 193 {
+		//fmt.Println("===")
+		//}
+		if i == 4096 {
+			fmt.Println("ad")
+		}
+		key := selfbtree.Encode(n)
+		value := selfbtree.Encode(n)
+		ok, _ := selfBtree.Insert(key, value)
+		if !ok {
+			fmt.Println("插入失败，key已存在")
+		}
+		//if ok {
+		//	fmt.Println("马蛋！！怎么插入成功了？！")
+		//}
+	}
+	if err != nil {
+		fmt.Println(err)
+	}
 	for i := start; i < testNum; i++ {
 		if i%50000 == 0 {
 			fmt.Printf("select from btree %d\n", i)
 		}
 		//n := randomKeys[i] & 0xffffffff
 		n := i
-		//if i == 65{
-		//	fmt.Println("21")
-		//}
+		if i == 2045 {
+			fmt.Println("21")
+		}
 		key := selfbtree.Encode(n)
 		value := selfbtree.Encode(n)
 		target, ok, err := selfBtree.GET(key)
@@ -198,7 +198,7 @@ func main() {
 			fmt.Println(err)
 		}
 		if !ok || !value.Equal(target) {
-			fmt.Println("操蛋")
+			fmt.Printf("操蛋,%d\n", i)
 		}
 	}
 	selfBtree.Flush()

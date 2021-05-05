@@ -69,7 +69,7 @@ func main22() {
 	usageNodeList.UsageInfoMap["2"] = UsageContainerInfo{
 		ContainerId: "2",
 		CpuUsage:    0.8,  // cpu利用率
-		MemUsage:    2048, //已使用内存
+		MemUsage:    4096, //已使用内存
 	}
 	usageNodeList.UsageInfoMap["3"] = UsageContainerInfo{
 		ContainerId: "3",

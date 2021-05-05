@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	NODE_HEAD        uint16 = 0xE4E5         //节点序列化头
-	KV_MAP_OFFSET    uint32 = 2 + 2 + 2048*8 // kv起始偏移量
-	CHILD_MAP_OFFSET uint32 = 2 + 2          //子节点偏移map offset
+	NODE_HEAD            uint16 = 0xE4E5             //节点序列化头
+	KV_MAP_OFFSET_LEAF   uint32 = 2 + 1 + 2          // kv起始偏移量，叶子节点
+	KV_MAP_OFFSET_BRANCH uint32 = 2 + 1 + 2 + 4096*8 // kv起始偏移量，分支节点
+	CHILD_MAP_OFFSET     uint32 = 2 + 1 + 2          //子节点偏移map offset
 )
 
 type Btree interface {
@@ -44,35 +45,59 @@ type btreeNode struct {
 }
 
 func (n *btreeNode) insertKv(idx int16, key Item, value Item) {
-	insertIdx := idx
-	if idx >= 0 {
-		n.kv = append(append(append([][]Item{{}}[0:0], n.kv[0:idx]...), []Item{key, value}),
-			n.kv[idx:n.size]...)
-	} else {
-		n.kv = append(n.kv, []Item{key, value})
-		insertIdx = int16(n.size)
-	}
-	dataLength := 4 + 4 + key.Lenth() + value.Lenth()
+	if n.isLeaf {
+		insertIdx := idx
+		if idx >= 0 {
+			n.kv = append(append(append([][]Item{{}}[0:0], n.kv[0:idx]...), []Item{key, value}),
+				n.kv[idx:n.size]...)
+		} else {
+			n.kv = append(n.kv, []Item{key, value})
+			insertIdx = int16(n.size)
+		}
+		dataLength := 4 + 4 + key.Lenth() + value.Lenth()
 
-	kvMapBuf := n.bufPage[KV_MAP_OFFSET : KV_MAP_OFFSET+uint32(n.size)*4]
-	copy(n.bufPage[KV_MAP_OFFSET+uint32(insertIdx+1)*4:], kvMapBuf[insertIdx*4:])
-	binary.BigEndian.PutUint32(n.bufPage[KV_MAP_OFFSET+uint32(insertIdx)*4:], n.kvDataOffsetStart-dataLength)
+		kvMapBuf := n.bufPage[KV_MAP_OFFSET_LEAF : KV_MAP_OFFSET_LEAF+uint32(n.size)*4]
+		copy(n.bufPage[KV_MAP_OFFSET_LEAF+uint32(insertIdx+1)*4:], kvMapBuf[insertIdx*4:])
+		binary.BigEndian.PutUint32(n.bufPage[KV_MAP_OFFSET_LEAF+uint32(insertIdx)*4:], n.kvDataOffsetStart-dataLength)
 
-	if n.kvDataOffsetStart < KV_MAP_OFFSET {
-		fmt.Println(n.kvDataOffsetStart)
+		dataBuf := n.bufPage[n.kvDataOffsetStart-dataLength : n.kvDataOffsetStart]
+		binary.BigEndian.PutUint32(dataBuf, dataLength)
+		binary.BigEndian.PutUint32(dataBuf[4:], key.Lenth())
+		copy(dataBuf[4+4:], key.Value())
+		copy(dataBuf[4+4+key.Lenth():], value.Value())
+		n.size++
+		binary.BigEndian.PutUint16(n.bufPage[3:5], n.size)
+		n.persistencer.SerializeNode(n)
+		n.kvDataOffsetStart = n.kvDataOffsetStart - dataLength
+	} else { //非叶子节点
+		insertIdx := idx
+		if idx >= 0 {
+			n.kv = append(append(append([][]Item{{}}[0:0], n.kv[0:idx]...), []Item{key, nil}),
+				n.kv[idx:n.size]...)
+		} else {
+			n.kv = append(n.kv, []Item{key, nil})
+			insertIdx = int16(n.size)
+		}
+		dataLength := 4 + key.Lenth()
+
+		kvMapBuf := n.bufPage[KV_MAP_OFFSET_BRANCH : KV_MAP_OFFSET_BRANCH+uint32(n.size)*4]
+		copy(n.bufPage[KV_MAP_OFFSET_BRANCH+uint32(insertIdx+1)*4:], kvMapBuf[insertIdx*4:])
+		binary.BigEndian.PutUint32(n.bufPage[KV_MAP_OFFSET_BRANCH+uint32(insertIdx)*4:], n.kvDataOffsetStart-dataLength)
+
+		dataBuf := n.bufPage[n.kvDataOffsetStart-dataLength : n.kvDataOffsetStart]
+		binary.BigEndian.PutUint32(dataBuf, dataLength)
+		copy(dataBuf[4:], key.Value())
+		n.size++
+		binary.BigEndian.PutUint16(n.bufPage[3:5], n.size)
+		n.persistencer.SerializeNode(n)
+		n.kvDataOffsetStart = n.kvDataOffsetStart - dataLength
 	}
-	dataBuf := n.bufPage[n.kvDataOffsetStart-dataLength : n.kvDataOffsetStart]
-	binary.BigEndian.PutUint32(dataBuf, dataLength)
-	binary.BigEndian.PutUint32(dataBuf[4:], key.Lenth())
-	copy(dataBuf[4+4:], key.Value())
-	copy(dataBuf[4+4+key.Lenth():], value.Value())
-	n.size++
-	binary.BigEndian.PutUint16(n.bufPage[2:4], n.size)
-	n.persistencer.SerializeNode(n)
-	n.kvDataOffsetStart = n.kvDataOffsetStart - dataLength
 }
 
 func (n *btreeNode) getChild(idx int) (*btreeNode, error) {
+	if idx == len(n.child) {
+		fmt.Println("2")
+	}
 	bn := n.child[idx]
 	if !bn.holdOnMem {
 		cbn, err := n.persistencer.LoadNode(bn, n.child[idx].offset, 1024*64)
@@ -97,23 +122,24 @@ func (n *btreeNode) istAndRepChilds(idx int16, left *btreeNode, right *btreeNode
 	}
 	n.child = child
 	//序列化到pageBuf
-	childBuf := n.bufPage[CHILD_MAP_OFFSET : CHILD_MAP_OFFSET+2048*8]
+	childBuf := n.bufPage[CHILD_MAP_OFFSET : CHILD_MAP_OFFSET+4096*8]
 	binary.BigEndian.PutUint64(childBuf[idx*8:], left.offset)
 	if idx == int16(n.size) {
 		binary.BigEndian.PutUint64(childBuf[(idx+1)*8:], right.offset)
 	} else {
-		copy(childBuf[(idx+2)*8:2048*8], childBuf[(idx+1)*8:2048*8])
+		copy(childBuf[(idx+2)*8:4096*8], childBuf[(idx+1)*8:4096*8])
 		binary.BigEndian.PutUint64(childBuf[(idx+1)*8:], right.offset)
 	}
 }
 
-func (b *btree) NewBtreeNode(orgNode *btreeNode, kv [][]Item, size uint16, childs []*btreeNode) (*btreeNode, error) {
+func (b *btree) NewBtreeNode(orgNode *btreeNode, isLeaf bool, kv [][]Item, size uint16, childs []*btreeNode) (*btreeNode, error) {
 	node := &btreeNode{
 		holdOnMem:    true,
 		kv:           kv,
 		size:         size,
 		child:        childs,
 		persistencer: b.persistencer,
+		isLeaf:       isLeaf,
 	}
 
 	if orgNode != nil {
@@ -126,27 +152,55 @@ func (b *btree) NewBtreeNode(orgNode *btreeNode, kv [][]Item, size uint16, child
 	cur := 0
 	binary.BigEndian.PutUint16(node.bufPage[cur:cur+2], NODE_HEAD) //写入node head
 	cur += 2
+	if isLeaf {
+		node.bufPage[cur] = 0x01 //最后一位为1表示是叶子节点
+	} else {
+		node.bufPage[cur] = 0x00
+	}
+	cur += 1
+	if size > 4096 {
+		fmt.Println("asd")
+	}
 	binary.BigEndian.PutUint16(node.bufPage[cur:cur+2], size) //写入元素个数
 	cur += 2
-	cnBuf := node.bufPage[cur : cur+2048*8]
-	cur += 2048 * 8
-	for idx, ch := range childs { //写入节点的子节点offset
-		binary.BigEndian.PutUint64(cnBuf[idx*8:(idx+1)*8], ch.offset)
+	if !node.isLeaf { //只有非叶子阶段才有子树
+		cnBuf := node.bufPage[cur : cur+4096*8]
+		for idx, ch := range childs { //写入节点的子节点offset
+			binary.BigEndian.PutUint64(cnBuf[idx*8:(idx+1)*8], ch.offset)
+		}
+		cur += 4096 * 8
 	}
 	dataOffset := uint32(cap(node.bufPage))
-	for _, itm := range kv {
-		// 计算数据长度
-		length := 4 + 4 + itm[0].Lenth() + itm[1].Lenth()
-		// 计算数据偏移量
-		dataOffset -= length
-		// 保存偏移量
-		binary.BigEndian.PutUint32(node.bufPage[cur:cur+4], dataOffset)
-		cur += 4
-		// 保存数据
-		dataBuf := node.bufPage[dataOffset : dataOffset+length]
-		binary.BigEndian.PutUint32(dataBuf, length)
-		binary.BigEndian.PutUint32(dataBuf[4:], itm[0].Lenth())
-		copy(dataBuf[8:length], append(append([]byte{}, itm[0].Value()...), itm[1].Value()...))
+	if isLeaf { //叶子节点，保存键值对
+		for _, itm := range kv {
+			// 计算数据长度
+			length := 4 + 4 + itm[0].Lenth() + itm[1].Lenth()
+			// 计算数据偏移量
+			dataOffset -= length
+			// 保存偏移量
+			binary.BigEndian.PutUint32(node.bufPage[cur:cur+4], dataOffset)
+			cur += 4
+			// 保存数据
+			dataBuf := node.bufPage[dataOffset : dataOffset+length]
+			binary.BigEndian.PutUint32(dataBuf, length)
+			binary.BigEndian.PutUint32(dataBuf[4:], itm[0].Lenth())
+			copy(dataBuf[8:8+itm[0].Lenth()], itm[0].Value())
+			copy(dataBuf[8+itm[0].Lenth():length], itm[1].Value())
+		}
+	} else { //非叶子节点只保存键
+		for _, itm := range kv {
+			// 计算数据长度
+			length := 4 + itm[0].Lenth()
+			// 计算数据偏移量
+			dataOffset -= length
+			// 保存偏移量
+			binary.BigEndian.PutUint32(node.bufPage[cur:cur+4], dataOffset)
+			cur += 4
+			// 保存数据
+			dataBuf := node.bufPage[dataOffset : dataOffset+length]
+			binary.BigEndian.PutUint32(dataBuf, length)
+			copy(dataBuf[4:length], itm[0].Value())
+		}
 	}
 	node.kvDataOffsetStart = dataOffset
 	offset, err := b.persistencer.SerializeNode(node)
@@ -211,7 +265,7 @@ func (b *btree) Insert(key, value Item) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		node, err := b.NewBtreeNode(b.root, [][]Item{middle}, 1, []*btreeNode{left, right})
+		node, err := b.NewBtreeNode(b.root, false, [][]Item{middle}, 1, []*btreeNode{left, right})
 		if err != nil {
 			return false, err
 		}
@@ -236,7 +290,7 @@ func (b *btree) insertIntoNode(node *btreeNode, key Item, value Item) bool {
 	if node.size == 0 { //空树
 		node.insertKv(-1, key, value)
 		return true
-	} else { //没有子树时
+	} else {
 		//然后插入
 		var idx int16 = -1
 		idx = int16(node.BinarySearchLE(key))
@@ -287,6 +341,9 @@ func (bn *btreeNode) BinarySearchLE(key Item) int {
 	end := int(bn.size)
 	mid := int(bn.size / 2)
 	kvs := bn.kv
+	if bn.size == 0 {
+		return -1
+	}
 	if key.Less(kvs[0][0]) {
 		return 0
 	}
@@ -341,7 +398,7 @@ func (b *btree) findValueByKey(node *btreeNode, key Item) (Item, error) {
 	idx := node.BinarySearchLE(key)
 	if idx >= 0 {
 		tkv := node.kv[idx]
-		if tkv[0].Equal(key) {
+		if tkv[0].Equal(key) && node.isLeaf {
 			return tkv[1], nil
 		} else {
 			if len(node.child) > 0 {
@@ -371,7 +428,10 @@ func (b *btree) findValueByKey(node *btreeNode, key Item) (Item, error) {
 func (b *btree) split(mode int, parent *btreeNode) (*btreeNode, []Item, *btreeNode, error) {
 	mid := parent.size - 2
 	midItem := parent.kv[mid]
-
+	isLeaf := false
+	if len(parent.child) == 0 {
+		isLeaf = true
+	}
 	var lchild, rchild []*btreeNode
 	if len(parent.child) > 0 {
 		if mode == 1 {
@@ -384,17 +444,29 @@ func (b *btree) split(mode int, parent *btreeNode) (*btreeNode, []Item, *btreeNo
 
 	var orgNode *btreeNode = nil
 	var ckv [][]Item = nil
-	if mode == 1 {
-		orgNode = parent
-		ckv = parent.kv[0:mid]
+	var leftSize uint16 = 0
+	if isLeaf {
+		if mode == 1 {
+			orgNode = parent
+			ckv = parent.kv[0 : mid+1]
+		} else {
+			ckv = append([][]Item{}, parent.kv[0:mid+1]...)
+		}
+		leftSize = mid + 1
 	} else {
-		ckv = append([][]Item{}, parent.kv[0:mid]...)
+		if mode == 1 {
+			orgNode = parent
+			ckv = parent.kv[0:mid]
+		} else {
+			ckv = append([][]Item{}, parent.kv[0:mid]...)
+		}
+		leftSize = mid
 	}
-	left, err := b.NewBtreeNode(orgNode, ckv, mid, lchild)
+	left, err := b.NewBtreeNode(orgNode, isLeaf, ckv, leftSize, lchild)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	right, err := b.NewBtreeNode(nil, append([][]Item{}, parent.kv[mid+1:]...), 1, rchild)
+	right, err := b.NewBtreeNode(nil, isLeaf, append([][]Item{}, parent.kv[mid+1:]...), 1, rchild)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -426,7 +498,7 @@ func NewBtree(path string, degree uint16, reloadFromDick bool) (Btree, error) {
 		}
 		bt.root = root
 	} else {
-		root, err := bt.NewBtreeNode(nil, make([][]Item, 0), 0, make([]*btreeNode, 0))
+		root, err := bt.NewBtreeNode(nil, true, make([][]Item, 0), 0, make([]*btreeNode, 0))
 		if err != nil {
 			return nil, err
 		}
