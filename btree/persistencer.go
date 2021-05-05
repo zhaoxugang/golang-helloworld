@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"os"
 )
 
@@ -56,14 +55,14 @@ func (p *SoltPersistencer) LoadNode(bn *btreeNode, offset uint64, size uint32) (
 			holdOnMem:    true,
 			child:        make([]*btreeNode, 0),
 			bufPage:      buf,
-			keyOffsetMap: make([]uint32, 4096),
+			keyOffsetMap: make([]uint32, 3072),
 			persistencer: p,
 		}
 	} else {
 		bn.holdOnMem = true
 		bn.child = make([]*btreeNode, 0)
 		bn.bufPage = buf
-		bn.keyOffsetMap = make([]uint32, 4096)
+		bn.keyOffsetMap = make([]uint32, 3072)
 		bn.persistencer = p
 	}
 	err = p.decoder(bn, buf)
@@ -104,11 +103,8 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 	cur += 2
 	if !bn.isLeaf {
 		// 节点子节点引用
-		childOffets := buf[cur : cur+4096*8] // 4096个子节点
+		childOffets := buf[cur : cur+3072*8] // 3072个子节点
 		for i := 0; i <= int(size); i += 1 {
-			if (i+1)*8 == 65536 {
-				fmt.Println("ads")
-			}
 			coff := binary.BigEndian.Uint64(childOffets[i*8 : (i+1)*8])
 			cbn := &btreeNode{
 				holdOnMem:    false,
@@ -117,7 +113,7 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 			}
 			bn.child = append(bn.child, cbn)
 		}
-		cur += 4096 * 8
+		cur += 3072 * 8
 	}
 
 	kvDataOffsetStart := uint32(len(buf))
@@ -140,9 +136,6 @@ func (p *SoltPersistencer) decoder(bn *btreeNode, buf []byte) error {
 		for i := 0; i < int(size); i++ {
 			offset := binary.BigEndian.Uint32(buf[cur+i*4 : cur+(i+1)*4])
 			len := binary.BigEndian.Uint32(buf[offset : offset+4])
-			if 3840212993 == offset+len {
-				fmt.Println("121")
-			}
 			kvbuf := buf[offset+4 : offset+len]
 			key := &btreeItem{key: kvbuf}
 			bn.keyOffsetMap[i] = offset

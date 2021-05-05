@@ -10,7 +10,7 @@ import (
 const (
 	NODE_HEAD            uint16 = 0xE4E5             //节点序列化头
 	KV_MAP_OFFSET_LEAF   uint32 = 2 + 1 + 2          // kv起始偏移量，叶子节点
-	KV_MAP_OFFSET_BRANCH uint32 = 2 + 1 + 2 + 4096*8 // kv起始偏移量，分支节点
+	KV_MAP_OFFSET_BRANCH uint32 = 2 + 1 + 2 + 3072*8 // kv起始偏移量，分支节点
 	CHILD_MAP_OFFSET     uint32 = 2 + 1 + 2          //子节点偏移map offset
 )
 
@@ -27,6 +27,7 @@ type btree struct {
 	capacity       uint16
 	maxDegree      uint16
 	reloadFromDick bool
+	endestNode     *btreeNode
 }
 
 type btreeNode struct {
@@ -95,9 +96,6 @@ func (n *btreeNode) insertKv(idx int16, key Item, value Item) {
 }
 
 func (n *btreeNode) getChild(idx int) (*btreeNode, error) {
-	if idx == len(n.child) {
-		fmt.Println("2")
-	}
 	bn := n.child[idx]
 	if !bn.holdOnMem {
 		cbn, err := n.persistencer.LoadNode(bn, n.child[idx].offset, 1024*64)
@@ -122,12 +120,12 @@ func (n *btreeNode) istAndRepChilds(idx int16, left *btreeNode, right *btreeNode
 	}
 	n.child = child
 	//序列化到pageBuf
-	childBuf := n.bufPage[CHILD_MAP_OFFSET : CHILD_MAP_OFFSET+4096*8]
+	childBuf := n.bufPage[CHILD_MAP_OFFSET : CHILD_MAP_OFFSET+3072*8]
 	binary.BigEndian.PutUint64(childBuf[idx*8:], left.offset)
 	if idx == int16(n.size) {
 		binary.BigEndian.PutUint64(childBuf[(idx+1)*8:], right.offset)
 	} else {
-		copy(childBuf[(idx+2)*8:4096*8], childBuf[(idx+1)*8:4096*8])
+		copy(childBuf[(idx+2)*8:3072*8], childBuf[(idx+1)*8:3072*8])
 		binary.BigEndian.PutUint64(childBuf[(idx+1)*8:], right.offset)
 	}
 }
@@ -158,17 +156,14 @@ func (b *btree) NewBtreeNode(orgNode *btreeNode, isLeaf bool, kv [][]Item, size 
 		node.bufPage[cur] = 0x00
 	}
 	cur += 1
-	if size > 4096 {
-		fmt.Println("asd")
-	}
 	binary.BigEndian.PutUint16(node.bufPage[cur:cur+2], size) //写入元素个数
 	cur += 2
 	if !node.isLeaf { //只有非叶子阶段才有子树
-		cnBuf := node.bufPage[cur : cur+4096*8]
+		cnBuf := node.bufPage[cur : cur+3072*8]
 		for idx, ch := range childs { //写入节点的子节点offset
 			binary.BigEndian.PutUint64(cnBuf[idx*8:(idx+1)*8], ch.offset)
 		}
-		cur += 4096 * 8
+		cur += 3072 * 8
 	}
 	dataOffset := uint32(cap(node.bufPage))
 	if isLeaf { //叶子节点，保存键值对
@@ -269,7 +264,19 @@ func (b *btree) Insert(key, value Item) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		// 设置快速节点
+		if b.root.offset == b.endestNode.offset {
+			b.endestNode = right
+		}
 		b.root = node
+	}
+
+	// 走快速路径插入,快速节点必须不是空树
+	if b.endestNode.size > 0 &&
+		b.endestNode.size < b.capacity &&
+		b.endestNode.kv[b.endestNode.size-1][0].Less(key) {
+		b.endestNode.insertKv(-1, key, value)
+		return true, nil
 	}
 	return b.insertIntoNode(b.root, key, value), nil
 }
@@ -322,6 +329,10 @@ func (b *btree) insertIntoNode(node *btreeNode, key Item, value Item) bool {
 				}
 				node.istAndRepChilds(childInsertIdx, left, right)
 				node.insertKv(idx, middle[0], middle[1])
+				//设置快速节点
+				if targetNode.offset == b.endestNode.offset {
+					b.endestNode = right
+				}
 				if key.Less(middle[0]) {
 					return b.insertIntoNode(left, key, value)
 				} else if key.Equal(middle[0]) {
@@ -474,6 +485,18 @@ func (b *btree) split(mode int, parent *btreeNode) (*btreeNode, []Item, *btreeNo
 	return left, midItem, right, nil
 }
 
+func (b *btree) findEndEstNode() (*btreeNode, error) {
+	curNode := b.root
+	for !curNode.isLeaf {
+		node, err := curNode.getChild(int(curNode.size))
+		if err != nil {
+			return nil, err
+		}
+		curNode = node
+	}
+	return curNode, nil
+}
+
 func NewBtree(path string, degree uint16, reloadFromDick bool) (Btree, error) {
 	if degree < 10 {
 		return nil, errors.New("degree is small than 2")
@@ -508,6 +531,12 @@ func NewBtree(path string, degree uint16, reloadFromDick bool) (Btree, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	bt.endestNode, err = bt.findEndEstNode()
+	if err != nil {
+		return nil, err
+	}
+
 	return bt, nil
 }
 
